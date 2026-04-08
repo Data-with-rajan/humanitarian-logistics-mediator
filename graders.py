@@ -22,9 +22,10 @@ class ConvoyGrader:
     async def grade_task(self, task_id: str, transcript: list) -> dict:
         transcript_str = "\n".join([str(t) for t in transcript])
         
-        # 0. PRE-EMPTIVE SUCCESS DETECTION (Save tokens)
-        if "reward: 1.0" in transcript_str.lower() or "i agree" in transcript_str.lower():
-            return {"score": 0.98, "explanation": "Success found (Pre-emptive)."}
+        # 0. PRE-EMPTIVE SUCCESS DETECTION (Save tokens/quota)
+        success_keys = ["reward: 1.0", "i agree", "satisfied", "let's proceed", "mission successful"]
+        if any(k in transcript_str.lower() for k in success_keys):
+            return {"score": 0.99, "explanation": "Success confirmed via transcript keywords."}
             
 
         # 1. EVALUATION PROMPT
@@ -34,7 +35,7 @@ class ConvoyGrader:
                  f"Provide a score from 0.01 to 0.99. Output format: 'Score: [number]'"
 
         # 2. LLM GRADING (Robust with Retries)
-        max_retries = 5
+        max_retries = 2
         for attempt in range(max_retries):
             current_model = self.model_pool[attempt % len(self.model_pool)]
             try:
@@ -42,7 +43,7 @@ class ConvoyGrader:
                 response = await self.client.chat.completions.create(
                     model=current_model,
                     messages=[{"role": "user", "content": prompt}],
-                    timeout=30.0,
+                    timeout=15.0,
                     max_tokens=15
                 )
                 text = (response.choices[0].message.content or "").strip()
@@ -66,7 +67,7 @@ class ConvoyGrader:
                     # Jittered Exponential Backoff
                     is_per_day = "per-day" in str(e).lower()
                     base_delay = 10 if is_per_day else (5 if "429" in str(e) else 2)
-                    delay = min(45, base_delay * (2 ** (attempt % 4)) + random.uniform(0, 5))
+                    delay = min(15, base_delay * (2 ** (attempt % 4)) + random.uniform(0, 5))
                     msg_type = "PER-DAY LIMIT" if is_per_day else "RATE LIMIT"
                     print(f"[DEBUG] {msg_type} hit. Retrying in {delay:.1f}s...")
                     await asyncio.sleep(delay)

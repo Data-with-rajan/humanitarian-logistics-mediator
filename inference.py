@@ -54,7 +54,7 @@ async def run_task(task_id: str, client: AsyncOpenAI):
                        "NO Subject lines. Speak DIRECTLY to the person."
         }]
 
-        for step in range(1, 11):
+        for step in range(1, 6):
             turn_prompt = f"STRICT MISSION: {current_goal}\n" \
                           f"Partner: '{obs.last_response}'.\n" \
                           f"TURN {step}/10. MAKE YOUR OFFER NOW:"
@@ -63,14 +63,14 @@ async def run_task(task_id: str, client: AsyncOpenAI):
             
             agent_msg = "Let us continue negotiating."
             # RETRY LOGIC for Rate Limits
-            max_retries = 5
+            max_retries = 6
             for attempt in range(max_retries):
                 current_model = FREE_MODEL_POOL[attempt % len(FREE_MODEL_POOL)]
                 try:
                     completion = await client.chat.completions.create(
                         model=current_model,
                         messages=history_context,
-                        timeout=60.0,
+                        timeout=20.0,
                         max_tokens=200,
                         extra_headers={"HTTP-Referer": "https://huggingface.co/spaces"}
                     )
@@ -91,8 +91,8 @@ async def run_task(task_id: str, client: AsyncOpenAI):
                         if attempt < max_retries - 1:
                             # Jittered Exponential Backoff
                             is_per_day = "per-day" in str(e).lower()
-                            base_delay = 10 if is_per_day else (12 if "429" in str(e) else 2)
-                            delay = min(45, base_delay * (1.5 ** (attempt % 6)) + random.uniform(0, 5))
+                            base_delay = 15 if is_per_day else (10 if "429" in str(e) else 2)
+                            delay = min(30, base_delay * (1.5 ** (attempt % 6)) + random.uniform(0, 5))
                             msg_type = "PER-DAY LIMIT" if is_per_day else "RATE LIMIT"
                             print(f"[DEBUG] {msg_type} hit. Retrying in {delay:.1f}s with a different model...", flush=True)
                             await asyncio.sleep(delay)
@@ -125,12 +125,13 @@ async def run_task(task_id: str, client: AsyncOpenAI):
 
 async def main():
     # Wait for server to be ready
-    await asyncio.sleep(10)
+    await asyncio.sleep(2)
     client = AsyncOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     tasks = ["easy_resource_share", "medium_conflict_resolution", "hard_deception_blockade"]
     for task in tasks:
         await run_task(task, client)
-        await asyncio.sleep(15)
+        # PACE TASKS TO AVOID RATE LIMITS
+        await asyncio.sleep(2)
 
 if __name__ == "__main__":
     asyncio.run(main())

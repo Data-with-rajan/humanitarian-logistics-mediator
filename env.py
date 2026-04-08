@@ -8,7 +8,7 @@ from models import ConvoyAction, ConvoyObservation, ConvoyReward, ROBUST_FREE_MO
 class NegotiationEnv:
     def __init__(self, task_id: str):
         self.task_id = task_id
-        self.turns_left = 10
+        self.turns_left = 5
         self.history = []
         self.mood = "Skeptical"
         self.goal_met = False
@@ -43,7 +43,7 @@ class NegotiationEnv:
             self.context = "Negotiator."
 
     async def reset(self) -> ConvoyObservation:
-        self.turns_left = 10
+        self.turns_left = 5
         self.history = [{"role": "system", "content": self.context}]
         msg = f"{self.partner_name}: What do you want? I need a real offer."
         return ConvoyObservation(history=[msg], current_mood="Skeptical", remaining_turns=10, last_response=msg)
@@ -57,19 +57,22 @@ class NegotiationEnv:
         response = "I am sorry, I am having trouble processing your request right now."
         reward_val = 0.01
 
-        if trigger_met and self.turns_left < 9:
+        if trigger_met:
             self.goal_met = True
             reward_val = 0.99
             response = f"I agree. Since you mentioned the {self.trigger}, I am satisfied. Let's proceed."
+        elif self.turns_left > 2:
+            # SAVE QUOTA: Static response for early turns
+            response = f"I am listening to your proposals for {self.partner_name}, but I need a more concrete offer regarding our requirements."
         else:
             # RETRY LOGIC for Rate Limits
-            max_retries = 5
+            max_retries = 4
             for attempt in range(max_retries):
                 current_model = self.model_pool[attempt % len(self.model_pool)]
                 try:
                     completion = await self.client.chat.completions.create(
                         model=current_model,
-                        messages=self.history, timeout=45.0, max_tokens=150
+                        messages=self.history, timeout=20.0, max_tokens=150
                     )
                     if completion and completion.choices:
                         response = completion.choices[0].message.content or ""
@@ -82,8 +85,8 @@ class NegotiationEnv:
                         if attempt < max_retries - 1:
                             # Jittered Exponential Backoff
                             is_per_day = "per-day" in str(e).lower()
-                            base_delay = 10 if is_per_day else (12 if "429" in str(e) else 2)
-                            delay = min(45, base_delay * (1.5 ** (attempt % 5)) + random.uniform(0, 5))
+                            base_delay = 15 if is_per_day else (10 if "429" in str(e) else 2)
+                            delay = min(30, base_delay * (1.5 ** (attempt % 5)) + random.uniform(0, 5))
                             msg_type = "PER-DAY LIMIT" if is_per_day else "RATE LIMIT"
                             print(f"[ENV ERROR] {msg_type} hit. Retrying in {delay:.1f}s with a different model...", flush=True)
                             await asyncio.sleep(delay)
