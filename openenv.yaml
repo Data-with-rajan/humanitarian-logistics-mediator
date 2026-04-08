@@ -1,0 +1,33 @@
+name: humanitarian_logistics_mediator
+version: 1.0.0
+description: A high-stakes negotiation environment where an agent manages a disaster relief convoy by communicating with local leaders, using persuasion and handling deception.
+author: User
+tags:
+  - openenv
+  - diplomacy
+  - negotiation
+  - real-world-utility
+
+tasks:
+  - id: easy_resource_share
+    description: Negotiate with a local NGO to share GPS data for a route.
+    difficulty: easy
+  - id: medium_conflict_resolution
+    description: Resolve a conflict between two village elders who both need the same water purifier.
+    difficulty: medium
+  - id: hard_deception_blockade
+    description: Negotiate with a militia leader blocking a convoy who is hiding resources while claiming scarcity.
+    difficulty: hard
+
+requirements:
+  - pydantic
+  - fastapi
+  - uvicorn
+  - openai
+  - gradio
+  - gradio-client
+  - markupsafe
+  - huggingface_hub
+  - jinja2
+  - openenv-core
+  - pillow
