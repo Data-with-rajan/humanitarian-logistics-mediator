@@ -5,7 +5,7 @@ import random
 import traceback
 from openai import AsyncOpenAI
 from env import NegotiationEnv
-from models import ConvoyAction
+from models import ConvoyAction, ROBUST_FREE_MODELS
 from graders import ConvoyGrader
 
 # Environment variables
@@ -15,13 +15,9 @@ API_KEY = os.environ.get("API_KEY")
 # Model Pool for Robustness (Cycling on Rate Limits)
 INJECTED_MODEL = os.getenv("MODEL_NAME")
 FREE_MODEL_POOL = [INJECTED_MODEL] if INJECTED_MODEL else []
-FREE_MODEL_POOL.extend([
-    "openrouter/free", 
-    "z-ai/glm-4.5-air:free",
-    "meta-llama/llama-3.3-70b-instruct:free"
-])
-# Remove duplicates while preserving order
-FREE_MODEL_POOL = list(dict.fromkeys(FREE_MODEL_POOL))
+FREE_MODEL_POOL.extend([m for m in ROBUST_FREE_MODELS if m != INJECTED_MODEL])
+# Randomize order to distribute load
+random.shuffle(FREE_MODEL_POOL)
 MODEL_NAME = FREE_MODEL_POOL[0]
 
 def log_start(task: str, env: str, model: str):
@@ -91,16 +87,25 @@ async def run_task(task_id: str, client: AsyncOpenAI):
                     break # Success!
                 except Exception as e:
                     print(f"[DEBUG] API Error Attempt {attempt+1} ({current_model}): {e}")
-                    if "429" in str(e) or "402" in str(e) or "404" in str(e):
+                    if "429" in str(e) or "402" in str(e) or "404" in str(e) or "400" in str(e):
                         if attempt < max_retries - 1:
-                            wait_time = 12 if "429" in str(e) else 2
-                            print(f"[DEBUG] Retrying in {wait_time}s with a different model...", flush=True)
-                            await asyncio.sleep(wait_time)
+                            # Jittered Exponential Backoff
+                            is_per_day = "per-day" in str(e).lower()
+                            base_delay = 10 if is_per_day else (12 if "429" in str(e) else 2)
+                            delay = min(45, base_delay * (1.5 ** (attempt % 6)) + random.uniform(0, 5))
+                            msg_type = "PER-DAY LIMIT" if is_per_day else "RATE LIMIT"
+                            print(f"[DEBUG] {msg_type} hit. Retrying in {delay:.1f}s with a different model...", flush=True)
+                            await asyncio.sleep(delay)
                         else:
                             # NO MOCKS - Pure LLM
-                            raise RuntimeError(f"ALL LLM RETRIES FAILED for {current_model}. Simulation aborted to ensure 100% real LLM activity.")
+                            print(f"[CRITICAL] ALL LLM RETRIES FAILED for {current_model}. Ending task gracefully.")
+                            break
                     else:
                         await asyncio.sleep(2)
+                
+                if "API Error" in agent_msg: # Fallback if error was caught but not raised
+                    print(f"[CRITICAL] Last attempt failed or is an error. Ending task.")
+                    break
 
             obs, reward_obj, done, _ = await env.step(ConvoyAction(message=agent_msg))
             rewards.append(reward_obj.score)

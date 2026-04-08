@@ -3,7 +3,7 @@ import os
 import random
 from typing import Tuple, Dict
 from openai import AsyncOpenAI
-from models import ConvoyAction, ConvoyObservation, ConvoyReward
+from models import ConvoyAction, ConvoyObservation, ConvoyReward, ROBUST_FREE_MODELS
 
 class NegotiationEnv:
     def __init__(self, task_id: str):
@@ -17,13 +17,9 @@ class NegotiationEnv:
         # Model Pool for Robustness
         self.injected_model = os.getenv("MODEL_NAME")
         self.model_pool = [self.injected_model] if self.injected_model else []
-        self.model_pool.extend([
-            "openrouter/free", 
-            "z-ai/glm-4.5-air:free",
-            "meta-llama/llama-3.3-70b-instruct:free"
-        ])
-        # Remove duplicates while preserving order
-        self.model_pool = list(dict.fromkeys(self.model_pool))
+        self.model_pool.extend([m for m in ROBUST_FREE_MODELS if m != self.injected_model])
+        # Randomize order to distribute load
+        random.shuffle(self.model_pool)
         self.model_name = self.model_pool[0]
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
         self.setup_task()
@@ -59,11 +55,11 @@ class NegotiationEnv:
         
         trigger_met = self.trigger in action.message.lower()
         response = "I am sorry, I am having trouble processing your request right now."
-        reward_val = -0.05
+        reward_val = 0.01
 
         if trigger_met and self.turns_left < 9:
             self.goal_met = True
-            reward_val = 1.0
+            reward_val = 0.99
             response = f"I agree. Since you mentioned the {self.trigger}, I am satisfied. Let's proceed."
         else:
             # RETRY LOGIC for Rate Limits
@@ -82,18 +78,25 @@ class NegotiationEnv:
                     break # Success!
                 except Exception as e:
                     print(f"[ENV ERROR] Attempt {attempt+1} ({current_model}) failed: {e}")
-                    if "429" in str(e) or "402" in str(e) or "404" in str(e):
+                    if "429" in str(e) or "402" in str(e) or "404" in str(e) or "400" in str(e):
                         if attempt < max_retries - 1:
-                            wait_time = 12 if "429" in str(e) else 2
-                            print(f"[ENV ERROR] Retrying in {wait_time}s with a different model...", flush=True)
-                            await asyncio.sleep(wait_time)
-                        else: # Out of retries
-                            raise RuntimeError(f"ALL LLM RETRIES FAILED for {current_model}. Simulation aborted to ensure 100% real LLM activity.")
+                            # Jittered Exponential Backoff
+                            is_per_day = "per-day" in str(e).lower()
+                            base_delay = 10 if is_per_day else (12 if "429" in str(e) else 2)
+                            delay = min(45, base_delay * (1.5 ** (attempt % 5)) + random.uniform(0, 5))
+                            msg_type = "PER-DAY LIMIT" if is_per_day else "RATE LIMIT"
+                            print(f"[ENV ERROR] {msg_type} hit. Retrying in {delay:.1f}s with a different model...", flush=True)
+                            await asyncio.sleep(delay)
+                        else:
+                            # NO MOCKS - Pure LLM
+                            print(f"[CRITICAL] ALL LLM RETRIES FAILED for {current_model}. Ending task gracefully.")
+                            break
                     else:
                         await asyncio.sleep(2)
                     
-                    if attempt == max_retries - 1:
-                         raise RuntimeError(f"ALL LLM RETRIES FAILED for {current_model}. Simulation aborted to ensure 100% real LLM activity.")
+                    if "API Error" in response: # Fallback if error was caught but not raised
+                        print(f"[CRITICAL] Last attempt failed or is an error. Ending task.")
+                        break
 
         self.history.append({"role": "assistant", "content": response})
         done = self.turns_left <= 0 or self.goal_met

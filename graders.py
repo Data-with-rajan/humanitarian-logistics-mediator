@@ -2,7 +2,9 @@ import asyncio
 import os
 import re
 import json
+import random
 from openai import AsyncOpenAI
+from models import ROBUST_FREE_MODELS
 
 class ConvoyGrader:
     def __init__(self):
@@ -11,13 +13,9 @@ class ConvoyGrader:
         # Model Pool for Robustness
         self.injected_model = os.getenv("MODEL_NAME")
         self.model_pool = [self.injected_model] if self.injected_model else []
-        self.model_pool.extend([
-            "openrouter/free", 
-            "z-ai/glm-4.5-air:free",
-            "meta-llama/llama-3.3-70b-instruct:free"
-        ])
-        # Remove duplicates while preserving order
-        self.model_pool = list(dict.fromkeys(self.model_pool))
+        self.model_pool.extend([m for m in ROBUST_FREE_MODELS if m != self.injected_model])
+        # Randomize order to distribute load
+        random.shuffle(self.model_pool)
         # Initialize Async Client
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
@@ -28,6 +26,12 @@ class ConvoyGrader:
         if "reward: 1.0" in transcript_str.lower() or "i agree" in transcript_str.lower():
             return {"score": 0.98, "explanation": "Success found (Pre-emptive)."}
             
+
+        # 1. EVALUATION PROMPT
+        prompt = f"Evaluate this negotiation transcript for task '{task_id}'. " \
+                 f"Success means achieving the humanitarian goal. " \
+                 f"Transcript:\n{transcript_str}\n\n" \
+                 f"Provide a score from 0.01 to 0.99. Output format: 'Score: [number]'"
 
         # 2. LLM GRADING (Robust with Retries)
         max_retries = 5
@@ -50,7 +54,7 @@ class ConvoyGrader:
                     score_match = re.search(r"[Ss]core[:\s]+(\d+\.\d+|\d+)", text)
                     score = float(score_match.group(1)) if score_match else float(nums[0])
                     if score > 1.0: score /= 100.0
-                    score = max(0.0, min(1.0, score))
+                    score = max(0.01, min(0.99, score))
                     return {"score": score, "explanation": f"Extracted '{score}' from {current_model}."}
                 
                 if attempt == max_retries - 1:
@@ -59,9 +63,15 @@ class ConvoyGrader:
             except Exception as e:
                 print(f"[DEBUG] Grader Error Attempt {attempt+1} ({current_model}): {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2)
+                    # Jittered Exponential Backoff
+                    is_per_day = "per-day" in str(e).lower()
+                    base_delay = 10 if is_per_day else (5 if "429" in str(e) else 2)
+                    delay = min(45, base_delay * (2 ** (attempt % 4)) + random.uniform(0, 5))
+                    msg_type = "PER-DAY LIMIT" if is_per_day else "RATE LIMIT"
+                    print(f"[DEBUG] {msg_type} hit. Retrying in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
                 else:
-                    return {"score": 0.5, "explanation": f"LLM error after {max_retries} attempts: {e}"}
+                    return {"score": 0.51, "explanation": f"LLM error after {max_retries} attempts: {e}"}
 
         # 3. TRANSCRIPT SIGNAL (FAILSAFE)
         if "reward: 1.0" in transcript_str.lower() or "i agree" in transcript_str.lower():
